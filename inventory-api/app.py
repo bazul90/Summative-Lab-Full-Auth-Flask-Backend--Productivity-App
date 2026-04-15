@@ -3,68 +3,146 @@ import requests
 
 app = Flask(__name__)
 
-inventory = []
-item_id = 1
 
-# CREATE
+# In-memory database
+
+inventory = []
+next_id = 1
+
+
+
+# HOME
+
+@app.route('/')
+def home():
+    return jsonify({"message": "Inventory API running"}), 200
+
+
+
+# CREATE ITEM
+
 @app.route('/items', methods=['POST'])
 def create_item():
-    global item_id
-    data = request.json
+    global next_id
+
+    data = request.get_json()
+
+    if not data or "name" not in data or "quantity" not in data:
+        return jsonify({"error": "name and quantity required"}), 400
+
     item = {
-        "id": item_id,
+        "id": next_id,
         "name": data["name"],
         "quantity": data["quantity"],
         "barcode": data.get("barcode", "")
     }
+
     inventory.append(item)
-    item_id += 1
+    next_id += 1
+
     return jsonify(item), 201
 
-# READ ALL
+
+
+# GET ALL ITEMS
+
 @app.route('/items', methods=['GET'])
 def get_items():
-    return jsonify(inventory)
+    return jsonify(inventory), 200
 
-# READ ONE
-@app.route('/items/<int:id>', methods=['GET'])
-def get_item(id):
-    for item in inventory:
-        if item["id"] == id:
-            return jsonify(item)
-    return {"error": "Item not found"}, 404
 
-# UPDATE
-@app.route('/items/<int:id>', methods=['PATCH'])
-def update_item(id):
-    data = request.json
+
+# GET SINGLE ITEM
+
+@app.route('/items/<int:item_id>', methods=['GET'])
+def get_item(item_id):
     for item in inventory:
-        if item["id"] == id:
+        if item["id"] == item_id:
+            return jsonify(item), 200
+
+    return jsonify({"error": "Item not found"}), 404
+
+
+
+# UPDATE ITEM
+
+@app.route('/items/<int:item_id>', methods=['PATCH'])
+def update_item(item_id):
+    data = request.get_json() or {}
+
+    for item in inventory:
+        if item["id"] == item_id:
             item.update(data)
-            return jsonify(item)
-    return {"error": "Item not found"}, 404
+            return jsonify(item), 200
 
-# DELETE
-@app.route('/items/<int:id>', methods=['DELETE'])
-def delete_item(id):
+    return jsonify({"error": "Item not found"}), 404
+
+
+# =========================
+# DELETE ITEM
+# =========================
+@app.route('/items/<int:item_id>', methods=['DELETE'])
+def delete_item(item_id):
     global inventory
-    inventory = [item for item in inventory if item["id"] != id]
-    return {"message": "Deleted"}
 
-# EXTERNAL API
+    for item in inventory:
+        if item["id"] == item_id:
+            inventory = [i for i in inventory if i["id"] != item_id]
+            return jsonify({"message": "Item deleted"}), 200
+
+    return jsonify({"error": "Item not found"}), 404
+
+
+
+# EXTERNAL API (FIXED 403 + SAFE)
+
 @app.route('/external/<barcode>', methods=['GET'])
-def get_external(barcode):
-    url = f"https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
-    response = requests.get(url)
-    data = response.json()
+def external_product(barcode):
+    try:
+        url = f"https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
 
-    if data["status"] == 1:
-        product = data["product"]
+        # FIX: 
+        headers = {
+            "User-Agent": "InventoryManagementSystem/1.0 (student project)"
+        }
+
+        response = requests.get(url, headers=headers, timeout=10)
+
+        if response.status_code != 200:
+            return jsonify({
+                "error": "External API request failed",
+                "status_code": response.status_code
+            }), 502
+
+        try:
+            data = response.json()
+        except ValueError:
+            return jsonify({
+                "error": "Invalid JSON response from external API",
+                "raw_response": response.text[:200]
+            }), 502
+
+        if data.get("status") == 1:
+            product = data.get("product", {})
+
+            return jsonify({
+                "name": product.get("product_name", "Unknown"),
+                "brand": product.get("brands", "Unknown"),
+                "category": product.get("categories", "Unknown"),
+                "nutriscore": product.get("nutriscore_grade", "unknown")
+            }), 200
+
+        return jsonify({"error": "Product not found"}), 404
+
+    except requests.exceptions.RequestException as e:
         return jsonify({
-            "name": product.get("product_name"),
-            "brand": product.get("brands")
-        })
-    return {"error": "Product not found"}, 404
+            "error": "Network error contacting external API",
+            "details": str(e)
+        }), 500
+
+
+
+# RUN APP
 
 if __name__ == '__main__':
     app.run(debug=True)
